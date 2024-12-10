@@ -4,6 +4,7 @@ import embeddings
 
 import minitorch
 from datasets import load_dataset
+from minitorch.fast_conv import conv1d
 
 BACKEND = minitorch.TensorBackend(minitorch.FastOps)
 
@@ -34,8 +35,14 @@ class Conv1d(minitorch.Module):
         self.bias = RParam(1, out_channels, 1)
 
     def forward(self, input):
+        output = conv1d(input, self.weights.value)
+        output = output + self.bias.value
+        return output
+
         # TODO: Implement for Task 4.5.
-        raise NotImplementedError("Need to implement for Task 4.5")
+        # Add bias (ensure proper broadcasting)
+        # The bias has shape (1, out_channels, 1), which should broadcast over (batch_size, out_channels, output_width)
+        # raise NotImplementedError("Need to implement for Task 4.5")
 
 
 class CNNSentimentKim(minitorch.Module):
@@ -61,15 +68,46 @@ class CNNSentimentKim(minitorch.Module):
     ):
         super().__init__()
         self.feature_map_size = feature_map_size
+
+        # self.convs = []
+        # for filter_size in filter_sizes:
+        #     conv = Conv1d(
+        #         in_channels=embedding_size,  # embedding_size is input channels
+        #         out_channels=feature_map_size,
+        #         kernel_width=filter_size,
+        #     )
+        #     self.add_module(f"conv_{filter_size}", conv)  # Add to module
+        #     self.convs.append(conv)
+
+        # self.fc = Linear(len(filter_sizes) * feature_map_size, 1)
+
+        self.layer1 = Conv1d(embedding_size, feature_map_size, filter_sizes[0])
+        self.layer2 = Conv1d(embedding_size, feature_map_size, filter_sizes[1])
+        self.layer3 = Conv1d(embedding_size, feature_map_size, filter_sizes[2])
+        self.layer4 = Linear(feature_map_size, 1)
+        self.dropout = dropout
+
         # TODO: Implement for Task 4.5.
-        raise NotImplementedError("Need to implement for Task 4.5")
+        #raise NotImplementedError("Need to implement for Task 4.5")
 
     def forward(self, embeddings):
         """
         embeddings tensor: [batch x sentence length x embedding dim]
         """
+        embeddings = embeddings.permute(0, 2, 1)
+        # feature maps
+        c1 = self.layer1.forward(embeddings).relu()
+        c2 = self.layer2.forward(embeddings).relu()
+        c3 = self.layer3.forward(embeddings).relu()
+
+        max_over_time = (minitorch.nn.max(c1, 2) + minitorch.nn.max(c2, 2) + minitorch.nn.max(c3, 2))
+
+        h = self.layer4.forward(max_over_time.view(max_over_time.shape[0], max_over_time.shape[1]))
+        h = minitorch.nn.dropout(h, self.dropout, not self.training)
+        return h.sigmoid().view(embeddings.shape[0])
+
         # TODO: Implement for Task 4.5.
-        raise NotImplementedError("Need to implement for Task 4.5")
+        #raise NotImplementedError("Need to implement for Task 4.5")
 
 
 # Evaluation helper methods
@@ -252,7 +290,68 @@ def encode_sentiment_data(dataset, pretrained_embeddings, N_train, N_val=0):
     return (X_train, y_train), (X_val, y_val)
 
 
+# import urllib3
+# import requests
+# from tqdm import tqdm
+# import os
+
+# def download_glove(url, local_path):
+#     """
+#     Download GloVe embeddings with a progress bar using `tqdm`.
+#     """
+#     if not os.path.exists(local_path):
+#         print(f"Downloading {url} to {local_path}")
+#         response = requests.get(url, stream=True, verify=False)
+#         total_size = int(response.headers.get('content-length', 0))
+
+#         with open(local_path, 'wb') as file, tqdm(
+#             desc="Downloading GloVe Embeddings",
+#             total=total_size,
+#             unit='B',
+#             unit_scale=True,
+#             unit_divisor=1024,
+#         ) as bar:
+#             for data in response.iter_content(chunk_size=1024):
+#                 file.write(data)
+#                 bar.update(len(data))
+#     else:
+#         print("GloVe embeddings already downloaded.")
+
+# if __name__ == "__main__":
+#     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+#     # GloVe download URL and local path
+#     glove_url = "http://nlp.stanford.edu/data/glove.6B.zip"
+#     glove_local_path = "./glove.6B.zip"
+
+#     # Download GloVe embeddings with a progress bar
+#     download_glove(glove_url, glove_local_path)
+
+#     # Proceed with sentiment analysis training
+#     train_size = 450
+#     validation_size = 100
+#     learning_rate = 0.01
+#     max_epochs = 250
+
+#     (X_train, y_train), (X_val, y_val) = encode_sentiment_data(
+#         load_dataset("glue", "sst2"),
+#         embeddings.GloveEmbedding(glove_local_path, d_emb=50, show_progress=False),
+#         train_size,
+#         validation_size,
+#     )
+#     model_trainer = SentenceSentimentTrain(
+#         CNNSentimentKim(feature_map_size=100, filter_sizes=[3, 4, 5], dropout=0.25)
+#     )
+#     model_trainer.train(
+#         (X_train, y_train),
+#         learning_rate,
+#         max_epochs=max_epochs,
+#         data_val=(X_val, y_val),
+#     )
+
 if __name__ == "__main__":
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     train_size = 450
     validation_size = 100
     learning_rate = 0.01
