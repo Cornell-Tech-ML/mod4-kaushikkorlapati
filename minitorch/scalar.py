@@ -55,6 +55,16 @@ class Scalar:
     Python numbers while also tracking the operations that led to the
     number's creation. They can only be manipulated by
     `ScalarFunction`.
+
+    Attributes
+    ----------
+        data : The underlying value stored in the Scalar.
+        history : Optional history of the function and inputs used to
+                  create the scalar.
+        derivative : The derivative of the scalar during backpropagation.
+        name : Unique name identifier for this scalar.
+        unique_id : Unique identifier for this scalar instance.
+
     """
 
     data: float
@@ -64,42 +74,95 @@ class Scalar:
     unique_id: int = field(default=0)
 
     def __post_init__(self):
+        """Post-initialization to assign a unique ID and ensure the data is a float."""
         global _var_count
         _var_count += 1
         object.__setattr__(self, "unique_id", _var_count)
         object.__setattr__(self, "name", str(self.unique_id))
         object.__setattr__(self, "data", float(self.data))
 
+    def __hash__(self):
+        """Return a hash of the scalar data."""
+        return hash(self.data)
+
     def __repr__(self) -> str:
+        """Return a string representation of the scalar."""
         return f"Scalar({self.data})"
 
     def __mul__(self, b: ScalarLike) -> Scalar:
+        """Perform element-wise multiplication between two scalars."""
         return Mul.apply(self, b)
 
     def __truediv__(self, b: ScalarLike) -> Scalar:
+        """Perform element-wise division between two scalars."""
         return Mul.apply(self, Inv.apply(b))
 
     def __rtruediv__(self, b: ScalarLike) -> Scalar:
+        """Perform element-wise division in reverse order."""
         return Mul.apply(b, Inv.apply(self))
 
     def __bool__(self) -> bool:
+        """Return the boolean representation of the scalar data."""
         return bool(self.data)
 
     def __radd__(self, b: ScalarLike) -> Scalar:
+        """Perform element-wise addition between scalars."""
         return self + b
 
     def __rmul__(self, b: ScalarLike) -> Scalar:
+        """Perform element-wise multiplication between scalars in reverse order."""
         return self * b
+
+    def __lt__(self, other: ScalarLike) -> Scalar:
+        """Return the result of less-than comparison with another scalar."""
+        return LT.apply(self, other)
+
+    def __gt__(self, other: ScalarLike) -> Scalar:
+        """Return the result of greater-than comparison with another scalar."""
+        return LT.apply(other, self)
+
+    def __sub__(self, other: ScalarLike) -> Scalar:
+        """Return the result of subtracting another scalar."""
+        return Add.apply(self, Neg.apply(other))
+
+    def __neg__(self) -> Scalar:
+        """Return the negative of the scalar."""
+        return Neg.apply(self)
+
+    def __add__(self, other: ScalarLike) -> Scalar:
+        """Return the result of adding another scalar."""
+        return Add.apply(self, other)
+
+    def __eq__(self, other: ScalarLike) -> Scalar:
+        """Return the result of equality comparison with another scalar."""
+        return EQ.apply(self, other)
+
+    def log(self) -> Scalar:
+        """Return the logarithm of the scalar."""
+        return Log.apply(self)
+
+    def exp(self) -> Scalar:
+        """Return the exponential of the scalar."""
+        return Exp.apply(self)
+
+    def sigmoid(self) -> Scalar:
+        """Return the sigmoid activation of the scalar."""
+        return Sigmoid.apply(self)
+
+    def relu(self) -> Scalar:
+        """Return the ReLU activation of the scalar."""
+        return ReLU.apply(self)
 
     # Variable elements for backprop
 
     def accumulate_derivative(self, x: Any) -> None:
-        """Add `val` to the the derivative accumulated on this variable.
-        Should only be called during autodifferentiation on leaf variables.
+        """Accumulate a value `x` to the derivative of this scalar.
+
+        This should be called only during autodifferentiation on leaf variables.
 
         Args:
         ----
-            x: value to be accumulated
+            x : The value to accumulate into the derivative.
 
         """
         assert self.is_leaf(), "Only leaf variables can have derivatives."
@@ -108,50 +171,76 @@ class Scalar:
         self.__setattr__("derivative", self.derivative + x)
 
     def is_leaf(self) -> bool:
-        """True if this variable created by the user (no `last_fn`)"""
+        """Return True if this variable was created by the user (i.e., has no `last_fn`)."""
         return self.history is not None and self.history.last_fn is None
 
     def is_constant(self) -> bool:
+        """Return True if the scalar is constant (i.e., no history or function applied)."""
         return self.history is None
 
     @property
     def parents(self) -> Iterable[Variable]:
-        """Get the variables used to create this one."""
+        """Return the input variables (parents) used to create this scalar."""
         assert self.history is not None
         return self.history.inputs
 
     def chain_rule(self, d_output: Any) -> Iterable[Tuple[Variable, Any]]:
+        """Apply the chain rule for backpropagation, returning a list of (parent, gradient) pairs.
+
+        Args:
+        ----
+            d_output : The derivative output at this scalar.
+
+        Returns:
+        -------
+            Iterable of (parent scalar, corresponding gradient) tuples.
+
+        """
         h = self.history
         assert h is not None
         assert h.last_fn is not None
         assert h.ctx is not None
 
-        raise NotImplementedError("Need to include this file from past assignment.")
+        grads = h.last_fn._backward(h.ctx, d_output)
+
+        if not isinstance(grads, tuple):
+            grads = (grads,)
+
+        result = []
+        for input_var, grad in zip(h.inputs, grads):
+            if not input_var.is_constant():
+                result.append((input_var, grad))
+
+        return result
 
     def backward(self, d_output: Optional[float] = None) -> None:
-        """Calls autodiff to fill in the derivatives for the history of this object.
+        """Perform backpropagation to compute the gradients for this scalar.
+
+        This function calls the autodiff `backpropagate` method to propagate the
+        derivatives through the computational graph.
 
         Args:
         ----
-            d_output (number, opt): starting derivative to backpropagate through the model
-                                   (typically left out, and assumed to be 1.0).
+            d_output : The initial derivative to propagate. If None, defaults to 1.0.
 
         """
         if d_output is None:
             d_output = 1.0
         backpropagate(self, d_output)
 
-    raise NotImplementedError("Need to include this file from past assignment.")
-
 
 def derivative_check(f: Any, *scalars: Scalar) -> None:
-    """Checks that autodiff works on a python function.
-    Asserts False if derivative is incorrect.
+    """Checks that autodiff works on a Python function by comparing
+    the calculated derivatives with numerical approximations.
+
+    Asserts False if the derivative is incorrect.
 
     Parameters
     ----------
-        f : function from n-scalars to 1-scalar.
-        *scalars  : n input scalar values.
+    f : Callable
+        A function that takes n Scalar arguments and returns a single Scalar value.
+    *scalars : Scalar
+        A variable-length argument list of Scalar objects to check the derivatives for.
 
     """
     out = f(*scalars)

@@ -8,7 +8,6 @@ from .autodiff import Context
 from .tensor import Tensor
 from .tensor_data import (
     MAX_DIMS,
-    Index,
     Shape,
     Strides,
     Storage,
@@ -22,6 +21,18 @@ Fn = TypeVar("Fn")
 
 
 def njit(fn: Fn, **kwargs: Any) -> Fn:
+    """Just-in-time (JIT) compile a function for performance optimization.
+
+    Args:
+    ----
+        fn (Fn): The function to be JIT-compiled.
+        **kwargs (Any): Additional keyword arguments passed to the JIT compiler.
+
+    Returns:
+    -------
+        Fn: The JIT-compiled version of the input function.
+
+    """
     return _njit(inline="always", **kwargs)(fn)  # type: ignore
 
 
@@ -46,52 +57,32 @@ def _tensor_conv1d(
     weight_strides: Strides,
     reverse: bool,
 ) -> None:
-    """1D Convolution implementation.
+    """1D Convolution implementation."""
+    batch, out_channels, out_width = out_shape
+    _, in_channels, input_width = input_shape
+    _, _, kernel_width = weight_shape
 
-    Given input tensor of
+    input_s = input_strides
+    weight_s = weight_strides
 
-       `batch, in_channels, width`
+    for i in prange(out_size):
+        out_idx = np.empty(MAX_DIMS, np.int32)
+        to_index(i, out_shape, out_idx)
+        b, oc, ow = out_idx[:3]
 
-    and weight tensor
+        result = 0.0
+        out_pos = index_to_position(out_idx, out_strides)
 
-       `out_channels, in_channels, k_width`
+        for ic in range(in_channels):
+            for k in range(kernel_width):
+                offset = kernel_width - 1 - k if reverse else k
+                weight_pos = oc * weight_s[0] + ic * weight_s[1] + offset * weight_s[2]
+                iw = ow - offset if reverse else ow + offset
 
-    Computes padded output of
-
-       `batch, out_channels, width`
-
-    `reverse` decides if weight is anchored left (False) or right.
-    (See diagrams)
-
-    Args:
-    ----
-        out (Storage): storage for `out` tensor.
-        out_shape (Shape): shape for `out` tensor.
-        out_strides (Strides): strides for `out` tensor.
-        out_size (int): size of the `out` tensor.
-        input (Storage): storage for `input` tensor.
-        input_shape (Shape): shape for `input` tensor.
-        input_strides (Strides): strides for `input` tensor.
-        weight (Storage): storage for `input` tensor.
-        weight_shape (Shape): shape for `input` tensor.
-        weight_strides (Strides): strides for `input` tensor.
-        reverse (bool): anchor weight at left or right
-
-    """
-    batch_, out_channels, out_width = out_shape
-    batch, in_channels, width = input_shape
-    out_channels_, in_channels_, kw = weight_shape
-
-    assert (
-        batch == batch_
-        and in_channels == in_channels_
-        and out_channels == out_channels_
-    )
-    s1 = input_strides
-    s2 = weight_strides
-
-    # TODO: Implement for Task 4.1.
-    raise NotImplementedError("Need to implement for Task 4.1")
+                if 0 <= iw < input_width:
+                    input_pos = b * input_s[0] + ic * input_s[1] + iw * input_s[2]
+                    result += input[input_pos] * weight[weight_pos]
+        out[out_pos] = result
 
 
 tensor_conv1d = njit(_tensor_conv1d, parallel=True)
@@ -127,6 +118,18 @@ class Conv1dFun(Function):
 
     @staticmethod
     def backward(ctx: Context, grad_output: Tensor) -> Tuple[Tensor, Tensor]:
+        """Computes the gradients of input and weight tensors during backpropagation.
+
+        Args:
+        ----
+            ctx (Context): The context object containing saved values from the forward pass.
+            grad_output (Tensor): The gradient of the output tensor from the subsequent layer.
+
+        Returns:
+        -------
+            Tuple[Tensor, Tensor]: Gradients with respect to input and weight tensors.
+
+        """
         input, weight = ctx.saved_values
         batch, in_channels, w = input.shape
         out_channels, in_channels, kw = weight.shape
@@ -170,57 +173,48 @@ def _tensor_conv2d(
     weight_strides: Strides,
     reverse: bool,
 ) -> None:
-    """2D Convolution implementation.
+    """2D Convolution implementation."""
+    batch, out_channels, out_height, out_width = out_shape
+    _, in_channels, input_height, input_width = input_shape
+    _, _, kernel_height, kernel_width = weight_shape
 
-    Given input tensor of
+    input_s = input_strides
+    weight_s = weight_strides
 
-       `batch, in_channels, height, width`
+    for i in prange(out_size):
+        out_idx = np.empty(MAX_DIMS, np.int32)
+        to_index(i, out_shape, out_idx)
+        b, oc, oh, ow = out_idx[:4]
 
-    and weight tensor
+        result = 0.0
+        out_pos = index_to_position(out_idx, out_strides)
 
-       `out_channels, in_channels, k_height, k_width`
+        for ic in range(in_channels):
+            for kh in range(kernel_height):
+                for kw in range(kernel_width):
+                    h_offset = kernel_height - 1 - kh if reverse else kh
+                    w_offset = kernel_width - 1 - kw if reverse else kw
 
-    Computes padded output of
+                    weight_pos = (
+                        oc * weight_s[0]
+                        + ic * weight_s[1]
+                        + h_offset * weight_s[2]
+                        + w_offset * weight_s[3]
+                    )
 
-       `batch, out_channels, height, width`
+                    ih = oh - h_offset if reverse else oh + h_offset
+                    iw = ow - w_offset if reverse else ow + w_offset
 
-    `Reverse` decides if weight is anchored top-left (False) or bottom-right.
-    (See diagrams)
+                    if 0 <= ih < input_height and 0 <= iw < input_width:
+                        input_pos = (
+                            b * input_s[0]
+                            + ic * input_s[1]
+                            + ih * input_s[2]
+                            + iw * input_s[3]
+                        )
+                        result += input[input_pos] * weight[weight_pos]
 
-
-    Args:
-    ----
-        out (Storage): storage for `out` tensor.
-        out_shape (Shape): shape for `out` tensor.
-        out_strides (Strides): strides for `out` tensor.
-        out_size (int): size of the `out` tensor.
-        input (Storage): storage for `input` tensor.
-        input_shape (Shape): shape for `input` tensor.
-        input_strides (Strides): strides for `input` tensor.
-        weight (Storage): storage for `input` tensor.
-        weight_shape (Shape): shape for `input` tensor.
-        weight_strides (Strides): strides for `input` tensor.
-        reverse (bool): anchor weight at top-left or bottom-right
-
-    """
-    batch_, out_channels, _, _ = out_shape
-    batch, in_channels, height, width = input_shape
-    out_channels_, in_channels_, kh, kw = weight_shape
-
-    assert (
-        batch == batch_
-        and in_channels == in_channels_
-        and out_channels == out_channels_
-    )
-
-    s1 = input_strides
-    s2 = weight_strides
-    # inners
-    s10, s11, s12, s13 = s1[0], s1[1], s1[2], s1[3]
-    s20, s21, s22, s23 = s2[0], s2[1], s2[2], s2[3]
-
-    # TODO: Implement for Task 4.2.
-    raise NotImplementedError("Need to implement for Task 4.2")
+        out[out_pos] = result
 
 
 tensor_conv2d = njit(_tensor_conv2d, parallel=True, fastmath=True)
@@ -254,6 +248,18 @@ class Conv2dFun(Function):
 
     @staticmethod
     def backward(ctx: Context, grad_output: Tensor) -> Tuple[Tensor, Tensor]:
+        """Computes the gradients of input and weight tensors during backpropagation.
+
+        Args:
+        ----
+            ctx (Context): The context object containing saved values from the forward pass.
+            grad_output (Tensor): The gradient of the output tensor from the subsequent layer.
+
+        Returns:
+        -------
+            Tuple[Tensor, Tensor]: Gradients with respect to input and weight tensors.
+
+        """
         input, weight = ctx.saved_values
         batch, in_channels, h, w = input.shape
         out_channels, in_channels, kh, kw = weight.shape

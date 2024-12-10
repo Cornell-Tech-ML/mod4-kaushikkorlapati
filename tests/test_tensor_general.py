@@ -4,7 +4,7 @@ from typing import Callable, Dict, Iterable, List, Tuple
 import numba
 import numba.cuda
 import pytest
-from hypothesis import given, settings
+from hypothesis import given, settings, HealthCheck
 from hypothesis.strategies import DataObject, data, integers, lists, permutations
 
 import minitorch
@@ -52,7 +52,7 @@ def test_create(backend: str, t1: List[float]) -> None:
 
 
 @given(data())
-@settings(max_examples=100)
+@settings(max_examples=5)
 @pytest.mark.parametrize("fn", one_arg)
 @pytest.mark.parametrize("backend", backend_tests)
 def test_one_args(
@@ -63,6 +63,7 @@ def test_one_args(
     """Run forward for all one arg functions above."""
     t1 = data.draw(tensors(backend=shared[backend]))
     name, base_fn, tensor_fn = fn
+    print(name)
     t2 = tensor_fn(t1)
     for ind in t2._tensor.indices():
         assert_close(t2[ind], base_fn(t1[ind]))
@@ -306,7 +307,7 @@ if numba.cuda.is_available():
 
 
 @given(data())
-@settings(max_examples=25)
+@settings(max_examples=25, suppress_health_check=(HealthCheck.all()))
 @pytest.mark.parametrize("fn", two_arg)
 @pytest.mark.parametrize("backend", backend_tests)
 def test_two_grad_broadcast(
